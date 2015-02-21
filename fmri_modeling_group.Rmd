@@ -1,0 +1,98 @@
+---
+title: "fMRI Group Modeling"
+author: "r poldrack"
+date: "February 20, 2015"
+output: html_document
+---
+
+Generate data for a group of subjects and compute both OLS and WLS group stats estimates.
+
+```{r}
+
+# load utility functions
+source('/Users/poldrack/Dropbox/Documents/Teaching/fMRI-stats/fmri_modeling_utilities.R')
+
+library(nlme)
+library(knitr)
+```
+
+Set up a blocked design with one condition.
+```{r}
+ntp=360  # number of timepoints, assume 1 timepoint/second for convenience
+block_length=30
+
+design=make_boxcar_design(ntp,block_length)
+
+# convolve with hemodynamic response
+design_hrf=hrf_conv(design)
+# remove mean
+design_hrf = design_hrf - mean(design_hrf)
+  
+# generate DCT basis functions to model low-frequency noise
+dct=get_dct(ntp)
+
+# put everything together into a single design matrix
+
+X=cbind(matrix(t(design_hrf)),dct,matrix(1,nrow=ntp,ncol=1))
+
+```
+
+```{r}
+# loop through, generating new datasets and estimating group model
+nsubs=24
+nruns=100
+# specify population parameter values
+beta=as.matrix(c(0.01,10,3,1,1000))
+beta_sd=as.array(c(0.0,1,0.5,0.1,100))  # don't add noise to beta
+
+group_beta_est=matrix(NA,nrow=nruns,ncol=2)
+group_t_est=matrix(NA,nrow=nruns,ncol=2)
+
+for (run in 1:nruns) {
+	beta_est=array(NA,dim=nsubs)
+	beta_est_se=array(NA,dim=nsubs)
+	for (sub in 1:nsubs) {
+		beta_sub=array(NA,dim=5)
+		for (i in 1:5) {
+			beta_sub[i]=rnorm(1,mean=beta[i],sd=beta_sd[i])
+			}
+		    
+		# use exponential dist for subject noise
+		data=generate_ar1wn_data(X,beta_sub,ar1_param=0,whitenoise_sd=max(c(rexp(1,rate=2),0.5)))
+		lm_trend.result=lm(data ~ X[,1:4])
+    s=summary(lm_trend.result)
+    beta_est[sub]=s$coefficients[2,1]
+    beta_est_se[sub]=s$coefficients[2,2]
+
+	}
+	
+	# OLS estimate - same as 1-sample t-test
+	ols_lm=lm(beta_est~1)
+	group_beta_est[run,1]=ols_lm$coefficients[1]
+	group_t_est[run,1]=summary(ols_lm)$coefficients[3]
+	
+	# weighted least squares
+	wls_lm=lm(beta_est~1, weights=1/beta_est_se^2)
+	group_beta_est[run,2]=wls_lm$coefficients[1]
+	group_t_est[run,2]=summary(wls_lm)$coefficients[3]
+	
+}
+
+par(mfrow=c(2,2))
+hist(group_beta_est[,1],nruns/10,main='OLS beta')
+hist(group_beta_est[,2],nruns/10,main='WLS beta')
+hist(group_t_est[,1],nruns/10,main='OLS t')
+hist(group_t_est[,2],nruns/10,main='WLS t')
+
+
+t_sig=apply(group_t_est>qt(0.95,nsubs-1), 2, sum)/nruns
+t_mean=apply(group_t_est, 2, mean)
+b_mean=apply(group_beta_est, 2, mean)
+b_sd=apply(group_beta_est, 2, sd)
+
+results=as.data.frame(rbind(b_mean,b_sd,t_mean,t_sig))
+names(results)=c('OLS','WLS')
+kable(results)
+
+```
+

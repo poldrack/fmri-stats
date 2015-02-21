@@ -1,0 +1,155 @@
+---
+title: "fmri stats"
+author: "r poldrack"
+date: "February 18, 2015"
+output: html_document
+---
+
+This notebook walks through the estimation issues involved in processing of fMRI data.
+
+First, we load some necessary libraries:
+```{r}
+
+# load utility functions
+source('/Users/poldrack/Dropbox/Documents/Teaching/fMRI-stats/fmri_modeling_utilities.R')
+library(nlme)
+library(knitr)
+```
+
+Let's generate some synthetic data, using a blocked design with a single condition that we will compare to the baseline.
+
+```{r}
+ntp=360  # number of timepoints, assume 1 timepoint/second for convenience
+block_length=30
+
+design=make_boxcar_design(ntp,block_length)
+
+# convolve with hemodynamic response
+design_hrf=hrf_conv(design)
+# standardize the regressor
+
+design_hrf = (design_hrf - mean(design_hrf))/sd(design_hrf)
+
+plot(design_hrf,type='l')
+```
+
+We use discrete cosine basis functions to model low-frequency components of the signal, so let's generate that matrix.
+
+```{r}
+dct=get_dct(ntp)
+image(t(dct),col = grey(seq(0, 1, length = 256)))
+```
+
+Generate the full design matrix and plot it.
+```{r}
+X=cbind(matrix(t(design_hrf)),dct,matrix(1,nrow=ntp,ncol=1))
+
+image(t(X),col = grey(seq(0, 1, length = 256)))
+```
+
+Now we will generate data from the design specified above, using an AR(1)+white noise model. This is not a completely realistic model, but it's good enough to demonstrate the effects of temporal autocorrelation.  First we set the betas.  The first column is the effect size on the design; set this to zero in order to assess null performance.  Columns 2-4 are the low-frequency components, and column 5 is the mean.
+```{r}
+
+# betas for parameters in design matrix:
+# 1: design regressor
+# 2-4: low-frequency components
+# 5: intercept
+beta=as.matrix(c(0,-10,3,1,1000))
+```
+
+
+Now we loop through generating synthetic data for a number of runs and estimate the parameters using several different models:
+
+```{r}
+
+nruns=100
+ar1_param=0.3
+estimate_arima=FALSE  # if true, we estimate AR1 param
+                      # otherwise, use the true parameter
+
+t=matrix(NA,nrow=nruns,ncol=3)
+p=matrix(NA,nrow=nruns,ncol=3)
+beta_est=matrix(NA,nrow=nruns,ncol=3)
+
+for (run in 1:nruns) {
+	data = generate_ar1wn_data(X,beta,ar1_param=ar1_param)
+	
+	# 1. fit simple OLS model without trends
+	lm.result=lm(data ~ X[,1])
+	t[run,1]=summary(lm.result)$coefficients[2,3]
+	p[run,1]=summary(lm.result)$coefficients[2,4]
+	beta_est[run,1]=lm.result$coefficients[2]
+	
+	# 2. fit OLS with trends
+
+	lm_trend.result=lm(data ~ X[,1:4])
+	t[run,2]=summary(lm_trend.result)$coefficients[2,3]
+	p[run,2]=summary(lm_trend.result)$coefficients[2,4]
+	beta_est[run,2]=lm_trend.result$coefficients[2]
+	
+	# 3.  fit GLS using estimated AR structure
+	if (estimate_arima) {
+    a=arima(lm_trend.result$residual,order=c(1,0,0))
+    gls.result=gls(data ~ X[,1:4],correlation=corAR1(a$coef[1]))
+  } else {
+    gls.result=gls(data ~ X[,1:4],correlation=corAR1(ar1_param))
+  }
+	t[run,3]=summary(gls.result)$tTable[2,3]
+	p[run,3]=summary(gls.result)$tTable[2,4]
+	beta_est[run,3]=gls.result$coefficients[2]
+		
+	}
+```
+
+Now print out and plot some of the results.
+```{r,echo=FALSE}
+summarydata=as.data.frame(rbind(apply(t,2,mean),apply(beta_est,2,mean),apply(beta_est,2,sd)))
+rownames(summarydata)=c('mean t','mean beta','sd beta')
+names(summarydata)=c('OLS','OLS+detrend','GLS')
+
+kable(summarydata)
+
+par(mfrow=c(3,3))
+plot(data)
+lines(lm.result$fitted,col='blue')
+plot(lm.result$residual,type='l')
+acf(lm.result$residual,main='ACF for basic model')
+
+plot(data)
+lines(lm_trend.result$fitted,col='blue')
+plot(lm_trend.result$residual,type='l')
+acf(lm_trend.result$residual,main='ACF for trend model')
+
+plot(data)
+lines(gls.result$fitted,col='blue')
+plot(gls.result$residual)
+acf(gls.result$residual,main='ACF for GLS model')
+
+par(mfrow=c(2,1))
+hist(beta_est[,1],20,main=sprintf('beta estimates - OLS (true value = %f)',beta[1]),xlim=c(-1,1),xlab='beta estimate')
+lines(c(beta[1],beta[1]),c(0,100),col='blue',lwd=4)
+hist(beta_est[,2],20,main=sprintf('beta estimates - OLS + HPF (true value = %f)',beta[1]),xlim=c(-1,1),xlab='beta estimate')
+lines(c(beta[1],beta[1]),c(0,100),col='blue',lwd=4)
+hist(beta_est[,3],20,main=sprintf('beta estimates - GLS (true value = %f)',beta[1]),xlim=c(-1,1),xlab='beta estimate')
+lines(c(beta[1],beta[1]),c(0,100),col='blue',lwd=4)
+
+par(mfrow=c(3,1))
+hist(t[,1],20,xlim=c(-5,5),main=sprintf('OLS: mean t=%0.2f',mean(t[,1])))
+hist(t[,2],20,xlim=c(-5,5),main=sprintf('OLS + HPF: mean t=%0.2f',mean(t[,2])))
+hist(t[,3],20,xlim=c(-5,5),main=sprintf('GLS: mean t=%0.2f',mean(t[,3])))
+
+
+```
+
+Assess type I error:
+
+```{r}
+
+sig_ct=apply(t>qt(0.95,ntp-1),2,sum)/nruns
+sig_ct=as.data.frame(sig_ct)
+rownames(sig_ct)=c('OLS','OLS+detrend','GLS')
+names(sig_ct)=c('False positive rate')
+
+kable(sig_ct)
+
+```
