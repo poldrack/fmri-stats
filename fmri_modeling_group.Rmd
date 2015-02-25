@@ -10,7 +10,7 @@ Generate data for a group of subjects and compute both OLS and WLS group stats e
 ```{r}
 
 # load utility functions
-source('/Users/poldrack/Dropbox/Documents/Teaching/fMRI-stats/fmri_modeling_utilities.R')
+source('fmri_modeling_utilities.R')
 
 library(nlme)
 library(knitr)
