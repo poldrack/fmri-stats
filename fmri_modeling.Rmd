@@ -11,7 +11,7 @@ First, we load some necessary libraries:
 ```{r}
 
 # load utility functions
-source('/Users/poldrack/Dropbox/Documents/Teaching/fMRI-stats/fmri_modeling_utilities.R')
+source('fmri_modeling_utilities.R')
 library(nlme)
 library(knitr)
 ```
